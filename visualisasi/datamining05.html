@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analisis Pemahaman Siswa</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Roboto', Arial, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 0; }
+        .container { max-width: 800px; margin: 40px auto; background: #ffffff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); padding: 20px 30px; }
+        h1 { text-align: center; color: #007bff; }
+        p { text-align: center; color: #666; }
+        label { font-weight: 700; margin-top: 10px; display: block; }
+        input, button { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+        button { background-color: #007bff; color: white; font-weight: bold; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #0056b3; }
+        canvas { margin: 20px auto; display: block; }
+        #output { margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-radius: 4px; border: 1px solid #ddd; }
+        #output p { margin: 5px 0; font-size: 14px; color: #444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Analisis Pemahaman Siswa Kelas 8</h1>
+        <p>Unggah file Excel berisi data nilai siswa untuk analisis pemahaman dengan K-Means.</p>
+
+        <label for="fileInput">Pilih File Excel:</label>
+        <input type="file" id="fileInput" accept=".xlsx, .xls">
+
+        <button onclick="analyzeData()">Lakukan Analisis</button>
+        <button onclick="location.reload()">Refresh</button>
+
+        <canvas id="elbowChart" style="width: 90%; height: 300px;"></canvas>
+        <canvas id="barChart" style="width: 90%; height: 300px;"></canvas>
+
+        <div id="output"></div>
+    </div>
+
+    <script>
+        let dataFromExcel = [];
+
+        document.getElementById("fileInput").addEventListener("change", event => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = e => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: "array" });
+
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+                dataFromExcel = jsonData.map(row => ({
+                    nama: row["Nama"],
+                    raport: row["Raport"]
+                }));
+
+                alert("Data berhasil diunggah!");
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        function analyzeData() {
+            if (!dataFromExcel.length) {
+                alert("Unggah file data terlebih dahulu!");
+                return;
+            }
+
+            const data = dataFromExcel.map(d => [d.raport]);
+
+            // Tentukan jumlah kluster menggunakan metode Elbow
+            const { optimalK, distortions } = findOptimalK(data);
+
+            // Visualisasi metode Elbow
+            const ctxElbow = document.getElementById("elbowChart").getContext("2d");
+            new Chart(ctxElbow, {
+                type: "line",
+                data: {
+                    labels: distortions.map((_, i) => i + 1),
+                    datasets: [{
+                        label: "Distortion",
+                        data: distortions,
+                        borderColor: "#007bff",
+                        fill: false
+                    }]
+                },
+                options: {
+                    plugins: { legend: { position: "top" } },
+                    scales: {
+                        x: { title: { display: true, text: "Jumlah Kluster" } },
+                        y: { title: { display: true, text: "Distortion" } }
+                    }
+                }
+            });
+
+            // Lakukan clustering dengan jumlah kluster optimal
+            const { clusters, centroids } = kMeans(data, optimalK);
+
+            // Analisis tingkat pemahaman
+            const understanding = analyzeUnderstanding(clusters, centroids);
+
+            // Visualisasi hasil clustering
+            const ctxBar = document.getElementById("barChart").getContext("2d");
+            new Chart(ctxBar, {
+                type: "bar",
+                data: {
+                    labels: understanding.map(u => u.label), // Gunakan label tingkat pemahaman
+                    datasets: [{
+                        label: "Frekuensi Nilai",
+                        data: understanding.map(u => u.count), // Jumlah siswa
+                        backgroundColor: understanding.map(() => `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.6)`)
+                    }]
+                },
+                options: {
+                    plugins: { legend: { position: "top" } },
+                    scales: {
+                        x: { title: { display: true, text: "Tingkat Pemahaman" } },
+                        y: { title: { display: true, text: "Frekuensi" } }
+                    }
+                }
+            });
+
+            // Tampilkan hasil klustering dan tingkat pemahaman
+            const output = understanding.map((u, index) => `
+                <p><strong>${u.label}:</strong> Nilai rata-rata: ${u.average.toFixed(2)}, Jumlah siswa: ${u.count}</p>
+                <p>Anggota kluster: ${JSON.stringify(u.members)}</p>
+            `).join("");
+
+            document.getElementById("output").innerHTML = output;
+        }
+
+        function findOptimalK(data) {
+            const maxK = 6;
+            const distortions = [];
+
+            for (let k = 1; k <= maxK; k++) {
+                const { centroids, clusters } = kMeans(data, k);
+                const distortion = clusters.reduce((sum, cluster, index) => {
+                    const centroid = centroids[index];
+                    const dist = cluster.reduce((acc, point) => acc + Math.pow(point[0] - centroid[0], 2), 0);
+                    return sum + dist;
+                }, 0);
+                distortions.push(distortion);
+            }
+
+            return { optimalK: 3, distortions }; // Asumsikan optimalK = 3
+        }
+
+        function kMeans(data, k) {
+            const centroids = [];
+            const clusters = [];
+            let converged = false;
+
+            for (let i = 0; i < k; i++) {
+                centroids.push(data[Math.floor(Math.random() * data.length)]);
+                clusters.push([]);
+            }
+
+            while (!converged) {
+                clusters.forEach(cluster => cluster.length = 0);
+
+                data.forEach(point => {
+                    const distances = centroids.map(centroid => Math.abs(point[0] - centroid[0]));
+                    const nearest = distances.indexOf(Math.min(...distances));
+                    clusters[nearest].push(point);
+                });
+
+                const newCentroids = clusters.map(cluster =>
+                    cluster.length ? calculateCentroid(cluster) : centroids[clusters.indexOf(cluster)]
+                );
+
+                converged = JSON.stringify(centroids) === JSON.stringify(newCentroids);
+                centroids.splice(0, centroids.length, ...newCentroids);
+            }
+
+            return { centroids, clusters };
+        }
+
+        function calculateCentroid(cluster) {
+            return [cluster.reduce((sum, point) => sum + point[0], 0) / cluster.length];
+        }
+
+        function analyzeUnderstanding(clusters, centroids) {
+            const analysis = clusters.map((cluster, index) => ({
+                label: "",
+                average: centroids[index][0],
+                count: cluster.length,
+                members: cluster.map(point => point[0])
+            }));
+
+            analysis.sort((a, b) => a.average - b.average);
+
+            analysis.forEach((item, sortedIndex) => {
+                if (sortedIndex === 0) item.label = "Kurang Paham";
+                else if (sortedIndex === 1) item.label = "Cukup Paham";
+                else if (sortedIndex === 2) item.label = "Sangat Paham";
+            });
+
+            return analysis;
+        }
+    </script>
+</body>
+</html>
